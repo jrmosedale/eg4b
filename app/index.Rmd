@@ -1,0 +1,353 @@
+---
+title: "EG4B Application"
+runtime: shiny
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    source_code: TRUE
+    theme: simplex
+---
+
+```{r setup, context='setup', include=FALSE}
+library(flexdashboard)
+library(shiny)
+library(raster)
+library(leaflet)
+#library(DT)
+library(magrittr)
+library(colorspace)
+library(rgeos)
+library(ggplot2)
+#library(shinyjs)
+#library(plotly)
+library(DiagrammeR)
+library(rgdal)
+library(sf)
+#library(tidyverse)
+library(leaflet.extras)
+
+################################################
+# Directories
+###############################################
+in.root<-"/Users/jm622/apps/fal/"
+dir_rasters<-paste(in.root,"www/",sep="")
+
+################################################
+# Global FUNCTIONS
+###############################################
+
+# Calculate cell number from lon lat values
+lonlat_to_cellnumber<-function(r,x,y,zone=0){ #http://stackoverflow.com/questions/18639967/converting-latitude-and-longitude-points-to-utm
+  xy <- data.frame(ID = 1:length(x), X = x, Y = y)
+  coordinates(xy) <- c("X", "Y")
+  proj4string(xy) <- CRS("+init=epsg:4326")  ## lat lon
+  xy <- spTransform(xy, CRS("+init=epsg:3857")) # convert to raster xy
+  cell <- cellFromXY(r, c(xy$X,xy$Y))
+  return(cell)
+}
+
+# Create circular mask around lat lon point
+# Used as mask for raster layers - limit to radius value around postcode centroid
+circle_mask<-function(lat,lng,radius){
+  pnt<- st_point(c(lng, lat))
+  pnt.sfc = st_sfc(pnt, crs = 4326)
+  pnt.sfc<-st_transform(pnt.sfc, 3035)
+  circle.sf<-st_buffer(pnt.sfc,5000)
+  circle.sf<-st_transform(circle.sf, 3857)
+  circle.mask<-as(circle.sf,'Spatial')
+  return(circle.mask)
+}
+
+
+```
+
+```{r,context='data', include=FALSE}
+# Load greenspace data 
+#greenspace.sf<-st_read(paste(dir_shape,"GrnSpc_by_SOA_map.shp",sep=""))
+
+######################
+# Postcode data - check postcodes incl outside fal or not
+######################
+cornwall_postcodes.sf<-st_read(paste0(dir_rasters,"cornwall_postcodes_4326/cornwall_postcodes_4326.shp"))
+st_crs(cornwall_postcodes.sf)<-"+init=epsg:4326"
+
+cornwall.centroids.sf<-st_read(paste0(dir_rasters,"cornwall_pc_ons_info/cornwall_pc_ons_info.shp"))
+cornwall_postcodes.r<-raster(paste0(dir_rasters,"cornwall_postcodes_3857.tif") )
+pclist<-cornwall.centroids.sf$pcds
+
+
+############################################
+# Include Functions to access Environment Agency Catchment API
+# need to add disclaimer identify data source
+############################################
+source(paste0(in.root,"EnvAgency_API_functions.R"))
+
+# Get WB IDs for all Cornwall
+mcatch<-list(3113,3089,3061) # three management catchments for Cornwall 
+cornwall_wb<-get_mcatch_wb(mcatch)
+# Get operational catchment geometry
+cornwall_ops<-unique(cornwall_wb$`isVersionOf.inOperationalCatchment.@id`)
+oplist<-as.list(substr(cornwall_ops,nchar(cornwall_ops)-3,nchar(cornwall_ops)))
+cornwall_op.sf<-get_op_polygons(oplist)
+
+# Determine which polygon coordinates fall within
+# https://github.com/r-spatial/sf/wiki/migrating
+find_polygon <- function(polygons, point) {
+  result<-st_intersects(polygons,point)
+  final<-which(result==1)
+  #polygon.sf<-polygons[final,]
+  return(final)
+}
+
+# Function identify if river or coastal draining area
+
+
+# Flood zone data
+fzone2<-st_read(paste0(dir_ea,"Flood_zone_2/cornwall_floodzone2_v201711.shp"))
+fzone3<-st_read(paste0(dir_ea,"Flood_zone_3/cornwall_floodzone3_v201711.shp"))
+fwa<-st_read(paste0(dir_ea,"Flood_Warning_Areas/cornwall_floodwarning201711.shp"))
+
+```
+
+
+Sidebar {.sidebar}
+============================================================================================
+
+### Location of Business
+Locate business using postcode search then use toolbar to correct location:
+
+```{r}
+selectizeInput('pc',label="Enter postcode: ",choices=NULL,options=list(maxItems=1) )# server side selectize 
+
+# actionButton("createreport", "Locate postcode", icon("paper-plane"), #width="100%",style="color: #fff; background-color: #337ab7; border-color: #2e6da4") 
+
+# Sidebar mini-map to locate business
+leafletOutput("locatemap", width="100%", height="300px")
+
+```
+
+### 
+```{r}
+actionButton("setlocation", "SET LOCATION", icon("paper-plane"), width="100%",style="color: #fff; background-color: #337ab7; border-color: #2e6da4") 
+```
+
+
+### Map appearance
+```{r}
+
+selectInput("maptiles",label="Choose background tiles", 
+             choices=  c("ESRI satellite world imagery" = "Esri.WorldImagery","OpenStreet map" = "OpenStreetMap.Mapnik"), selected="OpenStreetMap.Mapnik",selectize=TRUE  ) 
+
+#sliderInput("visibility","Set transparency:",min=0,max=1,value=0.7) 
+
+```
+
+
+```{r, context="server", include=FALSE}
+# Updata postcode entry - server side
+updateSelectizeInput(session,'pc', choices = pclist, server = TRUE)
+
+# Generate minimap
+output$locatemap<-renderLeaflet({
+     leaflet() %>% 
+       setView(lng=-5.0, lat = 50.2, zoom = 9)  %>%
+       addProviderTiles("OpenStreetMap.Mapnik") %>%
+       addScaleBar() %>%
+       addDrawToolbar(
+          targetGroup="location",
+          polylineOptions=FALSE, polygonOptions=FALSE, 
+          circleOptions=FALSE, rectangleOptions=FALSE,
+          markerOptions=TRUE,
+          singleFeature=TRUE,
+          editOptions = FALSE)
+   })
+
+# Update map according to postcode selection
+observe({
+     # Update map
+     leafletProxy("locatemap") %>% 
+       setView(lng = postcode_latlon()[1], 
+               lat = postcode_latlon()[2], 
+               zoom = 14)  %>%
+       clearPopups() %>%
+       clearImages() %>% 
+       clearShapes() %>%
+       clearMarkers() %>%
+       addProviderTiles(input$maptiles) %>%
+       addPolygons(data=postcode_polygon(), color="black")  %>% # Plot postcode outline
+       addMarkers(lng=postcode_latlon()[1], lat= postcode_latlon()[2],group="location")  
+}) # end observe
+
+# Reference for using drawn inputs: https://github.com/bhaskarvk/leaflet.extras/blob/master/inst/examples/shiny/draw-events/app.R
+
+  # Edited Features
+  #observeEvent(input$locatemap_draw_edited_features,{
+  #  print("Edited Features")
+  #  print(input$locatemap_draw_edited_features)
+  #})
+  
+# Get characteristics of a New Feature
+  observeEvent(input$locatemap_draw_new_feature,{
+    print("New Feature")
+    mkr<-input$locatemap_draw_new_feature
+    #print(class(mkr))
+    #print(mkr$geometry$coordinates)
+    lon<-mkr$geometry$coordinates[1]
+    lat<-mkr$geometry$coordinates[2]
+    print(paste("lon=",lon,"lat=",lat))
+    # UPDATE POSTCODE (case where location selected in new postcode or where none inputted)
+  })
+  
+  # Reactive function to get lat lon of postcode centroid
+  postcode_latlon<-reactive({
+     req(input$pc)
+     lat<-cornwall.centroids.sf$lat[cornwall.centroids.sf$pcds==input$pc]
+     lon<-cornwall.centroids.sf$long[cornwall.centroids.sf$pcds==input$pc]
+     print(paste("lat=",lat,"lon=",lon))
+     result<-c(lon,lat)
+     return(result)
+  })
+  
+  # Reactive function to acquire polygon for postcode
+  postcode_polygon<-reactive({
+     req(input$pc)
+     pcshape<-cornwall_postcodes.sf$geometry[cornwall_postcodes.sf$POSTCODE==input$pc]
+     return(pcshape)
+  })
+  
+  postcode_point<-reactive({
+     req(input$pc)
+     lat<-cornwall.centroids.sf$lat[cornwall.centroids.sf$pcds==input$pc]
+     lon<-cornwall.centroids.sf$long[cornwall.centroids.sf$pcds==input$pc]
+     print(paste("lat=",lat,"lon=",lon))
+     result<-st_point(c(lon,lat))
+     return(result)
+  })
+
+```
+
+
+Catchment & Water Quality
+============================================================================================
+Column {data-width=600}
+------------------------------------------------------------------------------------------------------------
+### Map of Catchment Area 
+
+```{r}
+leafletOutput("catchmap", width="100%", height="800px")
+
+```
+
+```{r, context="server", include=FALSE}
+
+# Identify which Op catchment location is in
+# Returns OpCatch ID number
+opcatch.id<- reactive({
+  req(postcode_point())
+  location.pt<-postcode_point()
+  opcatch.id<-cornwall_op.sf$OpID[ find_polygon(cornwall_op.sf, location.pt ) ]
+  #print( paste("opcatch trigger",opcatch.id) )
+  return(opcatch.id)
+})
+
+# Get river catchment polygon and ID within OpCatch 
+# Find river basin for location = NULL value if none
+# riverwb.id<-op.river.wb$WBID[ find_polygon(op.river.sf, location_point() ) ]
+
+riverwb.polygon<- reactive({
+  req(postcode_point())
+  location.pt<-postcode_point()
+  op.river.wb<-get_opcatch_wb(opcatch.id())
+  op.river.sf<-get_wb_polygons(op.river.wb$waterBodyNotation)
+  riverwb.sf<-op.river.sf[ find_polygon(op.river.sf, location.pt ) ,]
+  print( paste("riverwb trigger",riverwb.sf) )
+  return(riverwb.sf)
+})
+
+catchment.table<-reactive({
+  opcatch.id<-opcatch.id()
+  rivercatch.id<-riverwb.polygon()
+  rivercatch.id<-rivercatch.id$WBID
+  print(rivercatch.id)
+  result.table<-get_wb_info(rivercatch.id)
+  #print(result.table)
+  return(result.table)
+})
+
+# PLot operational catchment and river catchment polygons
+output$catchmap<-renderLeaflet({
+   leaflet() %>% 
+     setView(lng=-4.1, lat = 50.2, zoom = 9)  %>%
+     addProviderTiles("OpenStreetMap.Mapnik") %>%
+     addScaleBar() 
+
+})
+
+# Update map if inputs change
+observe({
+      river.catch<-riverwb.polygon()
+     leafletProxy("catchmap") %>% 
+        setView(lng=postcode_latlon()[1], lat = postcode_latlon()[2], zoom = 11)  %>% 
+        clearPopups() %>%
+       clearImages() %>% 
+       clearShapes() %>%
+       clearMarkers() %>%
+       addProviderTiles(input$maptiles) %>%
+       addPolygons(data=postcode_polygon(), color="black") %>% # Plot postcode outline
+       addMarkers( lng=postcode_latlon()[1], lat= postcode_latlon()[2])   %>%
+       addPolygons(data=cornwall_op.sf$geometry[which(cornwall_op.sf$OpID==opcatch.id())], fillColor = "red")   %>%
+        addPolygons (data=river.catch$geometry , fillColor = "blue" )
+
+})
+
+
+
+
+```
+
+
+
+
+Column {data-width=400}
+------------------------------------------------------------------------------------------------------------
+### Catchment Characteristics
+```{r}
+
+tableOutput('catchtable')
+
+```
+
+
+```{r, context="server", include=FALSE}
+
+output$catchtable<-renderTable( catchment.table()  )
+
+```
+
+
+
+Flood risk and prevention
+============================================================================================
+Column {data-width=600}
+------------------------------------------------------------------------------------------------------------
+### Amount of Greenspace by Population 
+
+```{r}
+
+```
+
+### A heading
+
+Land cover and habitats
+============================================================================================
+
+Population & Society
+============================================================================================
+Column {data-width=600}
+------------------------------------------------------------------------------------------------------------
+### NOMIS derived information - https://www.nomisweb.co.uk/api/v01/help?uid=0xd57c2bd58aa382ddb5cae1383cbe476f36609e57
+
+```{r}
+
+```

@@ -1,0 +1,68 @@
+NOTES -  EG4B Postcode app
+
+############
+STRUCTURE 1 - flexdashboard
+############
+# Universal sidebar: 
+Enter postcode at start of process 
+Minimap - Drop pin on location
+Generate Report button?
+Type of report options: browse on line , print, print to file???
+Radius for area of interest or by postcode???
+
+# Page Tab options for different themes or sidebar menu if shiny dashboard:
+
+THEMES
+
+# Air and water quality issues (catchment)
+Map layers (as rasters?) - catchment, AMZ, Catchment issues etc
+Printed output - catchment type/name, causes for concern etc
+
+
+# Flooding and mitigation - risk, historic, mitigation...
+Map layers (as rasters?) - flood risk zones, mitigation value, flow accumulation...
+Printed output - Distance from FZ, mitigation value of area (total amount of flow cf to average?)...
+
+
+# Habitat and land cover - 
+Map masked layers or overlay mask outline? 
+Dominant habitat, Priority habitats (shape or r?), Designated areas, Esimated pop density
+Printed & Graphical outputs: 
+Urban / Rural / Other mix
+Other Habitat mix
+Fragmentation measure?
+Access?
+
+# Biodiversity and spp sightings
+Maps: Species sightings, Designated areas
+
+
+# Social - greenspace, deprivation, population...
+By SOA or Postcode?
+Maps: greenspace, accessibility measures deprivation, population, age mix, 
+
+
+
+# Within each page - tab option - map, table, graph...
+
+############
+DATA PROCESSING
+############
+www dir
+
+RASTERS
+Rasters load as several stacks eg habitats, ES, catchments issues...
+assign names of layers
+convert and assign crs: "+init=epsg:3857"
+
+Value matrices for each stack?
+
+SHAPES
+load as sf whenever possible st_read(path and file)
+convert and set crs "+init=epsg:4326"
+
+
+
+
+
+
